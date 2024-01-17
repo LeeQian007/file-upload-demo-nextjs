@@ -1,22 +1,28 @@
 "use client";
-import React, { ChangeEvent, useRef, useState } from "react";
+import React, { useRef, useState } from "react";
 import { Button } from "./ui/button";
-import { ToastContainer, toast } from "react-toastify";
+import { toast } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
 import { instanceAxios } from "@/lib/axios-instance";
 import SparkMD5 from "spark-md5";
 import path from "path";
+import axios from "axios";
+import { Progress } from "./ui/progress";
 
-type Props = {};
 type BufferPack = {
   buffer: ArrayBuffer;
-  HASH: string;
+  Hash: string;
   suffix: string;
   filename: string;
 };
+let CHUNK_SIZE = 100 * 1024;
 
-const BigFileUpload = (props: Props) => {
+const BigFileUpload = () => {
   const [file, setFile] = useState<File | null>(null);
+  const [hash, setHash] = useState<string>("");
+  const [isExisted, setIsExisted] = useState<boolean>(false);
+  const [lastChunk, setLastChunk] = useState<number>(0);
+  const [isLoading, setIsLoading] = useState(true);
   const uploadRef = useRef<HTMLInputElement | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
 
@@ -28,13 +34,13 @@ const BigFileUpload = (props: Props) => {
         let buffer = ev.target?.result as ArrayBuffer;
         let spark = new SparkMD5.ArrayBuffer();
         spark.append(buffer);
-        let HASH = spark.end();
+        let Hash = spark.end();
         let suffix = path.extname(file.name);
         resolve({
           buffer,
-          HASH,
+          Hash,
           suffix,
-          filename: `${HASH}.${suffix}`,
+          filename: `${Hash}.${suffix}`,
         });
       };
     });
@@ -43,7 +49,6 @@ const BigFileUpload = (props: Props) => {
   const loadVideo = (file: File) => {
     return new Promise<HTMLVideoElement | null>((resolve, reject) => {
       const dataUrl = URL.createObjectURL(file);
-      console.log(videoRef);
       if (videoRef.current) {
         videoRef.current.onloadeddata = function () {
           resolve(videoRef.current);
@@ -52,8 +57,8 @@ const BigFileUpload = (props: Props) => {
           reject("video loaded failed.");
         };
         videoRef.current.setAttribute("preload", "auto");
+        // get the first frame as the image of the video
         videoRef.current.src = dataUrl;
-        console.log("set yeah");
       }
     });
   };
@@ -67,7 +72,12 @@ const BigFileUpload = (props: Props) => {
 
   const handleMove = () => {
     setFile(null);
+    setHash("");
+    setIsExisted(false);
+    setLastChunk(0);
+    setIsLoading(true);
     uploadRef.current!.value = "";
+    videoRef.current!.src = "";
   };
 
   const handleChange = async () => {
@@ -76,50 +86,114 @@ const BigFileUpload = (props: Props) => {
     }
     const file = uploadRef.current.files![0];
     setFile(file);
-    console.log(file);
 
     try {
       const video = await loadVideo(file);
-      const duration = video?.duration;
-      const width = video?.videoWidth;
-      const height = video?.height;
-      console.log(video);
+      let bufferPack = (await changeBuffer(file).then(
+        (res) => res
+      )) as BufferPack;
+      let { Hash } = bufferPack;
+      setHash(Hash);
+
+      const res = await instanceAxios.post(
+        "/api/upload-already",
+        {
+          HASH: Hash,
+          fileName: file.name,
+          fileType: file.type,
+        },
+        {
+          headers: { "Content-Type": "application/json" },
+        }
+      );
+      const { data } = res;
+      setIsLoading(false);
+
+      if (parseInt(data.code) === 1) {
+        setIsExisted(true);
+        setLastChunk(data.lastChunk);
+      }
+
+      if (data.lastChunk === 100) {
+        toast.success("服务端已有文件，妙传！");
+      }
     } catch (error) {
       console.log(error);
     }
-
-    //       const canvasElem = document.createElement('canvas')
-
-    // canvasElem.width = width
-    // canvasElem.height = height
-    // canvasElem.getContext('2d').drawImage(videoElem, 0, 0, videoWidth, videoHeight)
-    // // 导出成blob文件
-    // canvasElem.toBlob(blob => {
-    //   // 将blob文件转换成png文件
-    //   const thumbFile = toThumbFile(blob)
-    // }, 'image/png')
-
-    // let bufferPack = (await changeBuffer(file).then(
-    //   (res) => res
-    // )) as BufferPack;
-    // let Hash = bufferPack.HASH;
-
-    // // /upload-already 断点续传
-    // try {
-    //   const res = instanceAxios.get("/api/upload-already", {
-    //     params: { Hash },
-    //   });
-    //   console.log(res);
-    // } catch (error) {
-    //   console.log(error);
-    // }
   };
-  const handleUpload = () => {};
+
+  const handleUpload = async () => {
+    if (!file) return;
+    setIsLoading(true);
+    // 500 chunk for 50 MB
+    // count --> 560份
+    let count = Math.ceil(file?.size / CHUNK_SIZE);
+
+    let index = 0;
+    let chunks = [];
+    // 如果chunk大于100，就分成100块
+    if (count > 100) {
+      CHUNK_SIZE = file?.size / 100;
+      count = 100;
+    }
+
+    while (index < count) {
+      chunks.push({
+        file: file.slice(index * CHUNK_SIZE, (index + 1) * CHUNK_SIZE),
+        fileName: `${index + 1}_${file.name}`,
+        folderName: hash,
+        index: index,
+      });
+      index++;
+    }
+
+    if (isExisted) {
+      if (!lastChunk) return;
+      chunks = chunks.filter((item) => item.index > lastChunk - 1);
+    }
+
+    // 使用 Promise.all 处理多个异步请求
+    const requests = chunks.map((chunk) => {
+      let formData = new FormData();
+      formData.append("file", chunk.file);
+      formData.append("fileName", chunk.fileName);
+      formData.append("folderName", chunk.folderName);
+      formData.append("index", chunk.index.toString());
+
+      return axios.post("/api/upload-chunk", formData).then((res) => {
+        if (res.data.code === 1) {
+          setLastChunk((lastChunk) => lastChunk + 1);
+        }
+      });
+    });
+
+    try {
+      await Promise.all(requests);
+      toast.success("上传成功", { position: "top-center" });
+      setIsLoading(false);
+    } catch (error) {
+      console.error(error);
+    }
+  };
+  console.log("render");
 
   return (
     <div className="p-4 w-full md:w-[50%]">
-      <h1 className="text-sky-600">Big Video File upload using 「SLICE」</h1>
-      <div className="flex flex-col p-4 border-dotted border-4 rounded-lg min-h-[400px] h-[400px]">
+      <h1 className="text-sky-600">
+        Big Video File upload using 「SLICE + PROGRESSBAR」
+      </h1>
+      <div className="my-2">
+        Feature:
+        <li>
+          after choose file, it will trigger a req to know how much is left to
+          upload
+        </li>
+        <li>slice big files to small chunks</li>
+        <li>max chunks is 100, each chunk will send a post request</li>
+        <li>use promise all to trigger a toast</li>
+        <li>update onprogress bar</li>
+      </div>
+      <div className="flex flex-col p-4 border-dotted border-4 rounded-lg min-h-[400px] h-auto">
         <div className="flex justify-between gap-4">
           <input
             type="file"
@@ -130,30 +204,35 @@ const BigFileUpload = (props: Props) => {
           <Button onClick={handleChoose} className="flex-1">
             Choose File
           </Button>
-          <Button disabled={!file} onClick={handleUpload} className="flex-1">
+          <Button
+            disabled={isLoading}
+            onClick={handleUpload}
+            className="flex-1"
+          >
             Upload to The Server
           </Button>
         </div>
 
-        {file && (
-          <div>
-            <video src="" ref={videoRef}></video>
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            {/* <img
-              src={base!}
-              alt={file.name}
-              className="w-full h-full object-cover rounded-lg"
-            /> */}
-            <div className="flex items-center gap-4 p-4">
-              <p>{file.name}</p>
-              <Button onClick={handleMove} variant="destructive">
-                Remove
-              </Button>
-            </div>
-          </div>
-        )}
+        <div>
+          <video src="" ref={videoRef} className="py-4 rounded-lg"></video>
+          {file && (
+            <>
+              <div className="flex flex-col">
+                <div>
+                  <Progress value={lastChunk} />
+                </div>
+                <div className="flex items-center gap-4 p-4">
+                  <p>{file.name}</p>
+                  <p>{(file.size / 1000000).toFixed(2)}MB</p>
+                  <Button onClick={handleMove} variant="destructive">
+                    Remove
+                  </Button>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
       </div>
-      <ToastContainer hideProgressBar autoClose={2000} />
     </div>
   );
 };

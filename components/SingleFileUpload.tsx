@@ -1,13 +1,12 @@
 "use client";
 import React, { ChangeEvent, useRef, useState } from "react";
 import { Button } from "./ui/button";
-import { ToastContainer, toast } from "react-toastify";
+import { toast } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
 import { instanceAxios } from "@/lib/axios-instance";
+import { throttle } from "@/lib/throttle";
 
-type Props = {};
-
-const SingleFileUpload = (props: Props) => {
+const SingleFileUpload = () => {
   const [file, setFile] = useState<File | null>(null);
   const [base, setBase] = useState<string | null>(null);
   const uploadRef = useRef<HTMLInputElement | null>(null);
@@ -35,6 +34,7 @@ const SingleFileUpload = (props: Props) => {
     }
     if (e.target.files[0].size > 2 * 1024 * 1024) {
       alert("File size is too large");
+      return;
     }
     setFile(e.target.files[0]);
     const base = await changeBase64(e.target.files[0]).then((result) => result);
@@ -44,11 +44,12 @@ const SingleFileUpload = (props: Props) => {
 
   const handleMove = () => {
     setFile(null);
+    setBase(null);
     uploadRef.current!.value = "";
   };
 
   const handleUpload = async () => {
-    toast("Uploading");
+    const loading = toast.loading("Uploading...");
     try {
       // encodeURLComponent : help solve garbled code problem
       const response = await instanceAxios.post(
@@ -62,12 +63,22 @@ const SingleFileUpload = (props: Props) => {
       );
 
       if (response.status === 200) {
-        toast("Upload Success");
         handleMove();
+        toast.update(loading, {
+          render: "Upload successfully!",
+          type: "success",
+          isLoading: false,
+          autoClose: 2000,
+          closeOnClick: true,
+        });
       }
     } catch (error) {
-      alert("File upload failed.");
-    } finally {
+      toast.update(loading, {
+        render: "Something went wrong",
+        type: "error",
+        isLoading: false,
+        autoClose: 2000,
+      });
     }
   };
   return (
@@ -75,7 +86,15 @@ const SingleFileUpload = (props: Props) => {
       <h1 className="text-sky-600">
         Single File upload using 「BASE64 + THUMBNAIL」
       </h1>
-      <div className="flex flex-col p-4 border-dotted border-4 rounded-lg min-h-[400px] h-[400px]">
+      <div className="my-2">
+        Feature:
+        <li>convert the image to Base64</li>
+        <li>use type encodeURIComponent to transfer data</li>
+        <li>use Next.js route to handle the server side</li>
+        <li>store image to local dir</li>
+      </div>
+
+      <div className="flex flex-col p-4 border-dotted border-4 rounded-lg min-h-[400px] h-auto">
         <div className="flex justify-between gap-4">
           <input
             accept="image/png,image/jpg, image/jpeg, image/webp"
@@ -87,15 +106,19 @@ const SingleFileUpload = (props: Props) => {
           <Button onClick={handleChoose} className="flex-1">
             Choose File
           </Button>
-          <Button disabled={!file} onClick={handleUpload} className="flex-1">
+          <Button
+            disabled={!file}
+            onClick={throttle(handleUpload, 2000)}
+            className="flex-1"
+          >
             Upload to The Server
           </Button>
         </div>
         <p className="py-4">
           only .PNG/.JPG/.JPEG are allowed and max size is 2MB
         </p>
-        {file && (
-          <div>
+        {file && base && (
+          <div className="h-full">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
               src={base!}
@@ -111,7 +134,6 @@ const SingleFileUpload = (props: Props) => {
           </div>
         )}
       </div>
-      <ToastContainer hideProgressBar autoClose={2000} />
     </div>
   );
 };

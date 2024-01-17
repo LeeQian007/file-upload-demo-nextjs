@@ -15,7 +15,10 @@ export const instanceAxios = axios.create({
       if (headers["Content-Type"] === "application/x-www-form-urlencoded") {
         return qs.stringify(data);
       }
-      return data;
+      if (headers["Content-Type"] === "multipart/form-data") {
+        return data;
+      }
+      return JSON.stringify(data);
     },
   ],
 });

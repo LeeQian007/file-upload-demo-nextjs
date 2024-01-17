@@ -1,23 +1,19 @@
-import { NextApiRequest, NextApiResponse } from "next";
 import fs from "fs";
 import path from "path";
 import SparkMD5 from "spark-md5";
-import QueryString from "qs";
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
 type FileType = string | Buffer;
 
-export async function POST(req: NextApiRequest) {
+export async function POST(req: NextRequest) {
   if (req.method !== "POST") {
-    return new NextResponse("Method Not Allowed", { status: 405 }); // Method Not Allowed
+    return new NextResponse("Method Not Allowed", { status: 405 });
   }
 
-  // obtain data
-  let passedValue = await new Response(req.body).text();
-  const fileAndFileName = QueryString.parse(passedValue);
+  const fileAndFileName = await req.formData();
 
-  let file: FileType = fileAndFileName.file as string;
-  let fileName = fileAndFileName.fileName as string;
+  let file: FileType = fileAndFileName.get("file") as string;
+  let fileName = fileAndFileName.get("fileName") as string;
   let spark = new SparkMD5.ArrayBuffer();
   let suffix = path.extname(fileName);
   file = decodeURIComponent(file);
@@ -33,9 +29,8 @@ export async function POST(req: NextApiRequest) {
 
   try {
     fs.writeFileSync(filePath, file);
-
     return new NextResponse("file uploaded successfully", { status: 200 }); // OK
   } catch (err) {
-    return new NextResponse("file upload failed", { status: 500 });
+    return new NextResponse("file upload failed", { status: 400 });
   }
 }
